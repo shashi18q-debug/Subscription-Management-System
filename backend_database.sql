@@ -493,3 +493,195 @@ TO authenticated;
 -- =========================================
 -- END OF MODULE 14
 -- =========================================
+
+
+
+-- =========================================
+-- MODULE 15: SECURE ADMIN ROLE MANAGEMENT
+-- =========================================
+
+-- 15.1 Create secure function to assign user roles
+
+CREATE OR REPLACE FUNCTION public.set_user_role(
+    p_user_id UUID,
+    p_role TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+
+    -- Only existing admins can change roles
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Access denied: Admin permission required';
+    END IF;
+
+    -- Validate user ID
+    IF p_user_id IS NULL THEN
+        RAISE EXCEPTION 'User ID cannot be empty';
+    END IF;
+
+    -- Validate allowed roles
+    IF p_role IS NULL OR p_role NOT IN ('admin', 'staff', 'customer') THEN
+        RAISE EXCEPTION 'Invalid role. Allowed: admin, staff, customer';
+    END IF;
+
+    -- Prevent admins from changing their own role
+    IF p_user_id = (SELECT auth.uid()) THEN
+        RAISE EXCEPTION 'You cannot change your own role';
+    END IF;
+
+    -- Update the selected user's role
+    UPDATE public.profiles
+    SET role = p_role
+    WHERE id = p_user_id;
+
+    -- Check whether the user exists
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'User profile not found';
+    END IF;
+
+END;
+$$;
+
+
+-- 15.2 Restrict function execution
+
+REVOKE ALL ON FUNCTION public.set_user_role(UUID, TEXT)
+FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION public.set_user_role(UUID, TEXT)
+TO authenticated;
+
+
+-- =========================================
+-- END OF MODULE 15
+-- =========================================
+
+
+
+-- =========================================
+-- MODULE 16: QUOTE TEMPLATES AND QUOTATION MANAGEMENT
+-- =========================================
+
+-- 16.1 Create quotation templates
+
+CREATE TABLE IF NOT EXISTS public.quote_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    template_name TEXT NOT NULL,
+    description TEXT,
+
+    default_payment_terms TEXT,
+    validity_days INTEGER NOT NULL DEFAULT 30
+        CHECK (validity_days > 0),
+
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+
+    created_by UUID REFERENCES public.profiles(id)
+        ON DELETE SET NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+-- 16.2 Create quotation template items
+
+CREATE TABLE IF NOT EXISTS public.quote_template_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    template_id UUID NOT NULL
+        REFERENCES public.quote_templates(id)
+        ON DELETE CASCADE,
+
+    product_id UUID NOT NULL
+        REFERENCES public.products(id)
+        ON DELETE RESTRICT,
+
+    variant_id UUID
+        REFERENCES public.product_variants(id)
+        ON DELETE SET NULL,
+
+    quantity INTEGER NOT NULL DEFAULT 1
+        CHECK (quantity > 0),
+
+    unit_price NUMERIC(12,2) NOT NULL
+        CHECK (unit_price >= 0),
+
+    tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0
+        CHECK (tax_rate >= 0 AND tax_rate <= 100),
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+-- 16.3 Add quotation details to subscriptions
+
+ALTER TABLE public.subscriptions
+ADD COLUMN IF NOT EXISTS quote_template_id UUID
+    REFERENCES public.quote_templates(id)
+    ON DELETE SET NULL;
+
+ALTER TABLE public.subscriptions
+ADD COLUMN IF NOT EXISTS quotation_valid_until DATE;
+
+ALTER TABLE public.subscriptions
+ADD COLUMN IF NOT EXISTS quotation_notes TEXT;
+
+
+-- 16.4 Create indexes
+
+CREATE INDEX IF NOT EXISTS idx_quote_templates_active
+ON public.quote_templates(is_active);
+
+CREATE INDEX IF NOT EXISTS idx_quote_template_items_template
+ON public.quote_template_items(template_id);
+
+CREATE INDEX IF NOT EXISTS idx_quote_template_items_product
+ON public.quote_template_items(product_id);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_quote_template
+ON public.subscriptions(quote_template_id);
+
+
+-- 16.5 Enable Row Level Security
+
+ALTER TABLE public.quote_templates
+ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.quote_template_items
+ENABLE ROW LEVEL SECURITY;
+
+
+-- 16.6 Admin and Staff policies for quotation templates
+
+DROP POLICY IF EXISTS "Admin staff manage quote templates"
+ON public.quote_templates;
+
+CREATE POLICY "Admin staff manage quote templates"
+ON public.quote_templates
+FOR ALL
+TO authenticated
+USING (public.is_admin_or_staff())
+WITH CHECK (public.is_admin_or_staff());
+
+
+-- 16.7 Admin and Staff policies for template items
+
+DROP POLICY IF EXISTS "Admin staff manage quote template items"
+ON public.quote_template_items;
+
+CREATE POLICY "Admin staff manage quote template items"
+ON public.quote_template_items
+FOR ALL
+TO authenticated
+USING (public.is_admin_or_staff())
+WITH CHECK (public.is_admin_or_staff());
+
+
+-- =========================================
+-- END OF MODULE 16
+-- =========================================
