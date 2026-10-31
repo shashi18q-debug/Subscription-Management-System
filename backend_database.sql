@@ -436,3 +436,60 @@ ON public.invoices(discount_rule_id);
 -- END OF DATABASE SCHEMA
 -- NOTE: RLS POLICIES STILL NEED TO BE CONFIGURED.
 -- =====================================================
+
+
+
+-- =========================================
+-- MODULE 14: PROFILE SECURITY AND RLS
+-- =========================================
+
+-- 14.1 Allow users to view their own profile
+DROP POLICY IF EXISTS "Users view own profile"
+ON public.profiles;
+
+CREATE POLICY "Users view own profile"
+ON public.profiles
+FOR SELECT
+TO authenticated
+USING (id = (SELECT auth.uid()));
+
+
+-- 14.2 Allow admins to view all profiles
+DROP POLICY IF EXISTS "Admins view all profiles"
+ON public.profiles;
+
+CREATE POLICY "Admins view all profiles"
+ON public.profiles
+FOR SELECT
+TO authenticated
+USING (public.is_admin());
+
+
+-- 14.3 Allow admins to manage profiles through RLS
+DROP POLICY IF EXISTS "Admins manage profiles"
+ON public.profiles;
+
+CREATE POLICY "Admins manage profiles"
+ON public.profiles
+FOR ALL
+TO authenticated
+USING (public.is_admin())
+WITH CHECK (public.is_admin());
+
+
+-- 14.4 Restrict direct profile modifications
+-- Users cannot directly insert, update, or delete profiles.
+-- Role changes will be handled through a secure admin function later.
+
+REVOKE INSERT, UPDATE, DELETE
+ON public.profiles
+FROM authenticated;
+
+GRANT SELECT
+ON public.profiles
+TO authenticated;
+
+
+-- =========================================
+-- END OF MODULE 14
+-- =========================================
