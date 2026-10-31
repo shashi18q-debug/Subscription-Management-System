@@ -1295,3 +1295,176 @@ FROM PUBLIC, anon, authenticated;
 -- END OF MODULE 19
 -- =========================================
 
+
+
+-- =========================================
+-- MODULE 20: DISCOUNT CALCULATION AND USAGE LIMITS
+-- =========================================
+
+-- 20.1 Add discount usage tracking index
+
+CREATE INDEX IF NOT EXISTS idx_discount_rules_usage
+ON public.discount_rules(is_active, start_date, end_date);
+
+
+-- 20.2 Create secure discount application function
+
+CREATE OR REPLACE FUNCTION public.apply_invoice_discount(
+    p_invoice_id UUID,
+    p_discount_rule_id UUID
+)
+RETURNS NUMERIC(12,2)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_invoice public.invoices%ROWTYPE;
+    v_rule public.discount_rules%ROWTYPE;
+    v_quantity INTEGER;
+    v_discount NUMERIC(12,2);
+    v_eligible_amount NUMERIC(12,2);
+BEGIN
+
+    -- Only Admin and Staff can apply discounts
+    IF NOT public.is_admin_or_staff() THEN
+        RAISE EXCEPTION
+            'Access denied: Admin or Staff permission required';
+    END IF;
+
+    -- Lock invoice
+    SELECT *
+    INTO v_invoice
+    FROM public.invoices
+    WHERE id = p_invoice_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Invoice not found';
+    END IF;
+
+    -- Discounts can only be applied to unpaid draft invoices
+    IF v_invoice.status <> 'draft'
+       OR v_invoice.amount_paid <> 0 THEN
+        RAISE EXCEPTION
+            'Discounts can only be applied to unpaid draft invoices';
+    END IF;
+
+    -- Prevent applying a second discount
+    IF v_invoice.discount_rule_id IS NOT NULL THEN
+        RAISE EXCEPTION
+            'A discount is already applied to this invoice';
+    END IF;
+
+    -- Lock discount rule
+    SELECT *
+    INTO v_rule
+    FROM public.discount_rules
+    WHERE id = p_discount_rule_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Discount rule not found';
+    END IF;
+
+    -- Check whether the discount is active
+    IF v_rule.is_active = FALSE THEN
+        RAISE EXCEPTION 'Discount rule is inactive';
+    END IF;
+
+    -- Check discount validity dates
+    IF v_rule.start_date IS NOT NULL
+       AND CURRENT_DATE < v_rule.start_date THEN
+        RAISE EXCEPTION 'Discount is not active yet';
+    END IF;
+
+    IF v_rule.end_date IS NOT NULL
+       AND CURRENT_DATE > v_rule.end_date THEN
+        RAISE EXCEPTION 'Discount has expired';
+    END IF;
+
+    -- Check usage limit
+    IF v_rule.usage_limit IS NOT NULL
+       AND v_rule.times_used >= v_rule.usage_limit THEN
+        RAISE EXCEPTION 'Discount usage limit reached';
+    END IF;
+
+    -- Calculate total item quantity
+    SELECT COALESCE(SUM(quantity), 0)
+    INTO v_quantity
+    FROM public.invoice_items
+    WHERE invoice_id = p_invoice_id;
+
+    -- Check minimum quantity
+    IF v_rule.min_quantity IS NOT NULL
+       AND v_quantity < v_rule.min_quantity THEN
+        RAISE EXCEPTION
+            'Minimum quantity requirement not met';
+    END IF;
+
+    -- Check minimum purchase amount
+    IF v_rule.min_purchase_amount IS NOT NULL
+       AND v_invoice.subtotal < v_rule.min_purchase_amount THEN
+        RAISE EXCEPTION
+            'Minimum purchase amount requirement not met';
+    END IF;
+
+    -- Calculate fixed or percentage discount
+    IF v_rule.discount_type = 'fixed' THEN
+
+        v_discount := v_rule.discount_value;
+
+    ELSIF v_rule.discount_type = 'percentage' THEN
+
+        v_discount := ROUND(
+            v_invoice.subtotal * v_rule.discount_value / 100,
+            2
+        );
+
+    ELSE
+
+        RAISE EXCEPTION 'Unsupported discount type';
+
+    END IF;
+
+    -- Discount cannot exceed invoice subtotal
+    v_eligible_amount := v_invoice.subtotal;
+
+    v_discount := LEAST(
+        v_discount,
+        v_eligible_amount
+    );
+
+    -- Update invoice
+    UPDATE public.invoices
+    SET
+        discount_total = v_discount,
+        total_amount = subtotal + tax_total - v_discount,
+        discount_rule_id = p_discount_rule_id
+    WHERE id = p_invoice_id;
+
+    -- Increase discount usage count
+    UPDATE public.discount_rules
+    SET times_used = times_used + 1
+    WHERE id = p_discount_rule_id;
+
+    RETURN v_discount;
+
+END;
+$$;
+
+
+-- 20.3 Restrict function execution
+
+REVOKE ALL ON FUNCTION
+public.apply_invoice_discount(UUID, UUID)
+FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION
+public.apply_invoice_discount(UUID, UUID)
+TO authenticated;
+
+
+-- =========================================
+-- END OF MODULE 20
+-- =========================================
