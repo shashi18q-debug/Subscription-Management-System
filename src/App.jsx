@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { loginUser, registerUser, logoutUser } from "./api";
 import "./App.css";
 
 const initialProducts = [
@@ -26,10 +27,13 @@ const money = (amount) =>
     style: "currency",
     currency: "INR",
     maximumFractionDigits: 0,
-  }).format(amount);
+  }).format(Number(amount) || 0);
 
 function App() {
   const [page, setPage] = useState("Dashboard");
+  const [isLoggedIn, setIsLoggedIn] = useState(
+    Boolean(localStorage.getItem("token"))
+  );
   const [products, setProducts] = useState(initialProducts);
   const [subscriptions, setSubscriptions] = useState(initialSubscriptions);
   const [invoices, setInvoices] = useState(initialInvoices);
@@ -39,6 +43,22 @@ function App() {
   const [productPrice, setProductPrice] = useState("");
   const [notice, setNotice] = useState("");
   const [selectedPlan, setSelectedPlan] = useState(null);
+
+  function notify(message) {
+    setNotice(message);
+    window.setTimeout(() => setNotice(""), 3000);
+  }
+
+  function handleLogout() {
+    logoutUser();
+    setIsLoggedIn(false);
+    setPage("Dashboard");
+    setNotice("");
+  }
+
+  if (!isLoggedIn) {
+    return <AuthScreen onLogin={() => setIsLoggedIn(true)} />;
+  }
 
   const activeSubscriptions = subscriptions.filter(
     (item) => item.status === "Active"
@@ -71,11 +91,6 @@ function App() {
       ],
     },
   ];
-
-  function notify(message) {
-    setNotice(message);
-    window.setTimeout(() => setNotice(""), 3000);
-  }
 
   function addProduct(event) {
     event.preventDefault();
@@ -162,10 +177,30 @@ function App() {
         </div>
 
         <div className="stats-grid">
-          <StatCard icon="↻" label="Active subscriptions" value={activeSubscriptions} detail="Currently running" />
-          <StatCard icon="₹" label="Payments collected" value={money(collected)} detail="From paid invoices" />
-          <StatCard icon="◷" label="Outstanding amount" value={money(outstanding)} detail="Awaiting payment" />
-          <StatCard icon="!" label="Overdue invoices" value={overdue} detail="Need your attention" />
+          <StatCard
+            icon="↻"
+            label="Active subscriptions"
+            value={activeSubscriptions}
+            detail="Currently running"
+          />
+          <StatCard
+            icon="₹"
+            label="Payments collected"
+            value={money(collected)}
+            detail="From paid invoices"
+          />
+          <StatCard
+            icon="◷"
+            label="Outstanding amount"
+            value={money(outstanding)}
+            detail="Awaiting payment"
+          />
+          <StatCard
+            icon="!"
+            label="Overdue invoices"
+            value={overdue}
+            detail="Need your attention"
+          />
         </div>
 
         <div className="content-grid">
@@ -175,10 +210,14 @@ function App() {
                 <h3>Recent subscriptions</h3>
                 <p>Keep track of your customers</p>
               </div>
-              <button className="text-btn" onClick={() => setPage("Subscriptions")}>
+              <button
+                className="text-btn"
+                onClick={() => setPage("Subscriptions")}
+              >
                 View all →
               </button>
             </div>
+
             {renderTable(
               ["Subscription", "Customer", "Amount", "Status"],
               subscriptions.slice(0, 4).map((item) => (
@@ -198,18 +237,37 @@ function App() {
                 <h3>Invoice overview</h3>
                 <p>Payment activity</p>
               </div>
-              <button className="text-btn" onClick={() => setPage("Invoices")}>
+              <button
+                className="text-btn"
+                onClick={() => setPage("Invoices")}
+              >
                 View all →
               </button>
             </div>
 
             <div className="invoice-summary">
-              <div><span>Paid invoices</span><strong>{invoices.filter(i => i.status === "Paid").length}</strong></div>
-              <div><span>Pending invoices</span><strong>{invoices.filter(i => i.status === "Pending").length}</strong></div>
-              <div><span>Overdue invoices</span><strong className="danger-text">{overdue}</strong></div>
+              <div>
+                <span>Paid invoices</span>
+                <strong>
+                  {invoices.filter((item) => item.status === "Paid").length}
+                </strong>
+              </div>
+              <div>
+                <span>Pending invoices</span>
+                <strong>
+                  {invoices.filter((item) => item.status === "Pending").length}
+                </strong>
+              </div>
+              <div>
+                <span>Overdue invoices</span>
+                <strong className="danger-text">{overdue}</strong>
+              </div>
             </div>
 
-            <button className="secondary-btn full-btn" onClick={() => setPage("Invoices")}>
+            <button
+              className="secondary-btn full-btn"
+              onClick={() => setPage("Invoices")}
+            >
               Manage invoices
             </button>
           </section>
@@ -219,8 +277,8 @@ function App() {
   }
 
   function renderProducts() {
-    const filtered = products.filter((p) =>
-      p.name.toLowerCase().includes(search.toLowerCase())
+    const filtered = products.filter((product) =>
+      product.name.toLowerCase().includes(search.toLowerCase())
     );
 
     return (
@@ -230,7 +288,10 @@ function App() {
             <h3>Product catalogue</h3>
             <p>Manage the products your business offers.</p>
           </div>
-          <button className="primary-btn" onClick={() => setShowForm(!showForm)}>
+          <button
+            className="primary-btn"
+            onClick={() => setShowForm(!showForm)}
+          >
             + Add product
           </button>
         </div>
@@ -241,31 +302,42 @@ function App() {
               Product name
               <input
                 value={productName}
-                onChange={(e) => setProductName(e.target.value)}
+                onChange={(event) => setProductName(event.target.value)}
                 placeholder="e.g. Cloud Workspace"
                 required
               />
             </label>
+
             <label>
               Price (₹)
               <input
                 type="number"
                 min="1"
                 value={productPrice}
-                onChange={(e) => setProductPrice(e.target.value)}
+                onChange={(event) => setProductPrice(event.target.value)}
                 placeholder="1200"
                 required
               />
             </label>
-            <button className="primary-btn" type="submit">Save product</button>
-            <button className="secondary-btn" type="button" onClick={() => setShowForm(false)}>Cancel</button>
+
+            <button className="primary-btn" type="submit">
+              Save product
+            </button>
+
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => setShowForm(false)}
+            >
+              Cancel
+            </button>
           </form>
         )}
 
         <div className="toolbar">
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => setSearch(event.target.value)}
             placeholder="Search products..."
           />
           <span>{filtered.length} products</span>
@@ -273,14 +345,17 @@ function App() {
 
         {renderTable(
           ["Product", "Category", "Price", "Billing", "Action"],
-          filtered.map((p) => (
-            <tr key={p.id}>
-              <td className="strong-cell">{p.name}</td>
-              <td>{p.category}</td>
-              <td>{money(p.price)}</td>
+          filtered.map((product) => (
+            <tr key={product.id}>
+              <td className="strong-cell">{product.name}</td>
+              <td>{product.category}</td>
+              <td>{money(product.price)}</td>
               <td>Monthly</td>
               <td>
-                <button className="text-btn" onClick={() => notify("Product details: " + p.name)}>
+                <button
+                  className="text-btn"
+                  onClick={() => notify("Product details: " + product.name)}
+                >
                   View details
                 </button>
               </td>
@@ -293,9 +368,24 @@ function App() {
 
   function renderPlans() {
     const plans = [
-      { name: "Basic", price: 1200, features: "Essential features", color: "basic" },
-      { name: "Professional", price: 2500, features: "Advanced analytics and support", color: "pro" },
-      { name: "Enterprise", price: 8500, features: "Premium support and custom features", color: "enterprise" },
+      {
+        name: "Basic",
+        price: 1200,
+        features: "Essential features",
+        color: "basic",
+      },
+      {
+        name: "Professional",
+        price: 2500,
+        features: "Advanced analytics and support",
+        color: "pro",
+      },
+      {
+        name: "Enterprise",
+        price: 8500,
+        features: "Premium support and custom features",
+        color: "enterprise",
+      },
     ];
 
     return (
@@ -305,7 +395,10 @@ function App() {
             <div className={"plan-icon " + plan.color}>◇</div>
             <p className="eyebrow">SUBSCRIPTION PLAN</p>
             <h3>{plan.name}</h3>
-            <h2>{money(plan.price)}<small> / month</small></h2>
+            <h2>
+              {money(plan.price)}
+              <small> / month</small>
+            </h2>
             <p>{plan.features}</p>
             <button
               className="secondary-btn full-btn"
@@ -335,19 +428,23 @@ function App() {
           </div>
           <button
             className="primary-btn"
-            onClick={() => notify("Connect this button to your subscription creation form next.")}
+            onClick={() =>
+              notify("Subscription creation will be connected next.")
+            }
           >
             + New subscription
           </button>
         </div>
+
         <div className="toolbar">
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => setSearch(event.target.value)}
             placeholder="Search subscriptions..."
           />
           <span>{filtered.length} subscriptions</span>
         </div>
+
         {renderTable(
           ["ID", "Customer", "Plan", "Amount", "Status", "Action"],
           filtered.map((item) => (
@@ -358,7 +455,10 @@ function App() {
               <td>{money(item.amount)}</td>
               <td><Status value={item.status} /></td>
               <td>
-                <button className="text-btn" onClick={() => toggleSubscription(item.id)}>
+                <button
+                  className="text-btn"
+                  onClick={() => toggleSubscription(item.id)}
+                >
                   {item.status === "Active" ? "Pause" : "Activate"}
                 </button>
               </td>
@@ -385,19 +485,23 @@ function App() {
           </div>
           <button
             className="primary-btn"
-            onClick={() => notify("Invoice creation will be connected to the backend.")}
+            onClick={() =>
+              notify("Invoice creation will be connected to the backend.")
+            }
           >
             + Create invoice
           </button>
         </div>
+
         <div className="toolbar">
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => setSearch(event.target.value)}
             placeholder="Search invoices..."
           />
           <span>{filtered.length} invoices</span>
         </div>
+
         {renderTable(
           ["Invoice", "Customer", "Issue date", "Amount", "Status", "Action"],
           filtered.map((item) => (
@@ -409,7 +513,10 @@ function App() {
               <td><Status value={item.status} /></td>
               <td>
                 {item.status !== "Paid" ? (
-                  <button className="text-btn" onClick={() => markPaid(item.id)}>
+                  <button
+                    className="text-btn"
+                    onClick={() => markPaid(item.id)}
+                  >
                     Mark paid
                   </button>
                 ) : (
@@ -457,7 +564,9 @@ function App() {
             {group.items.map((item) => (
               <button
                 key={item.name}
-                className={"nav-item " + (page === item.name ? "selected" : "")}
+                className={
+                  "nav-item " + (page === item.name ? "selected" : "")
+                }
                 onClick={() => {
                   setPage(item.name);
                   setSearch("");
@@ -478,14 +587,15 @@ function App() {
           <div className="profile-avatar">AD</div>
           <div>
             <strong>Admin User</strong>
-            <span>admin@brightloop.com</span>
+            <span>Signed in</span>
           </div>
           <button
             className="logout-btn"
-            onClick={() => notify("Demo mode: authentication is not connected yet.")}
-            title="Account"
+            onClick={handleLogout}
+            type="button"
+            title="Log out"
           >
-            ⋯
+            Log out
           </button>
         </div>
       </aside>
@@ -503,7 +613,11 @@ function App() {
                 year: "numeric",
               })}
             </span>
-            <button className="notification-btn" onClick={() => setPage("Invoices")} title="View invoices">
+            <button
+              className="notification-btn"
+              onClick={() => setPage("Invoices")}
+              title="View invoices"
+            >
               ♧<i />
             </button>
             <div className="top-avatar">AD</div>
@@ -527,7 +641,7 @@ function App() {
 
           <footer>
             © 2026 SubscriptIQ
-            <span>Subscription Management System · Demo data</span>
+            <span>Subscription Management System</span>
           </footer>
         </div>
       </main>
@@ -535,7 +649,10 @@ function App() {
       {notice && <div className="toast">{notice}</div>}
 
       {selectedPlan && (
-        <div className="modal-backdrop" onClick={() => setSelectedPlan(null)}>
+        <div
+          className="modal-backdrop"
+          onClick={() => setSelectedPlan(null)}
+        >
           <section
             className="plan-modal"
             role="dialog"
@@ -553,7 +670,9 @@ function App() {
 
             <p className="eyebrow">SUBSCRIPTION PLAN</p>
             <h2 id="plan-modal-title">{selectedPlan.name}</h2>
-            <h3>{money(selectedPlan.price)} <small>/ month</small></h3>
+            <h3>
+              {money(selectedPlan.price)} <small>/ month</small>
+            </h3>
             <p>{selectedPlan.features}</p>
 
             <button
@@ -569,6 +688,251 @@ function App() {
   );
 }
 
+function AuthScreen({ onLogin }) {
+  const [mode, setMode] = useState("login");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const passwordValid =
+    password.length > 8 &&
+    /[A-Z]/.test(password) &&
+    /[a-z]/.test(password) &&
+    /[^A-Za-z0-9]/.test(password);
+
+  async function submit(event) {
+    event.preventDefault();
+    setError("");
+
+    if (!email.trim() || !password) {
+      setError("Enter your email and password.");
+      return;
+    }
+
+    if (mode === "signup" && !name.trim()) {
+      setError("Enter your name.");
+      return;
+    }
+
+    if (mode === "signup" && !passwordValid) {
+      setError(
+        "Password must be longer than 8 characters and include uppercase, lowercase, and a special character."
+      );
+      return;
+    }
+
+    if (mode === "signup" && password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      if (mode === "signup") {
+        await registerUser(name.trim(), email.trim(), password);
+      } else {
+        await loginUser(email.trim(), password);
+      }
+
+      onLogin();
+    } catch (err) {
+      setError(err.message || "Authentication failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const fieldStyle = {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "12px 14px",
+    border: "1px solid #d8deea",
+    borderRadius: 10,
+    font: "inherit",
+    marginTop: 6,
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "grid",
+        placeItems: "center",
+        padding: 24,
+        background: "#f4f6fb",
+        fontFamily: "inherit",
+      }}
+    >
+      <section
+        style={{
+          width: "100%",
+          maxWidth: 430,
+          background: "white",
+          padding: 32,
+          borderRadius: 18,
+          boxShadow: "0 18px 60px #1b2b4b18",
+          boxSizing: "border-box",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 28,
+          }}
+        >
+          <div
+            style={{
+              background: "#4f46e5",
+              color: "white",
+              width: 42,
+              height: 42,
+              display: "grid",
+              placeItems: "center",
+              borderRadius: 12,
+              fontWeight: 800,
+            }}
+          >
+            S
+          </div>
+          <strong style={{ fontSize: 20 }}>SubscriptIQ</strong>
+        </div>
+
+        <h1 style={{ margin: "0 0 8px", fontSize: 26 }}>
+          {mode === "login" ? "Welcome back" : "Create your account"}
+        </h1>
+
+        <p style={{ color: "#68738a", margin: "0 0 24px" }}>
+          {mode === "login"
+            ? "Sign in to manage your subscriptions."
+            : "Sign up to get started with SubscriptIQ."}
+        </p>
+
+        <form onSubmit={submit} style={{ display: "grid", gap: 15 }}>
+          {mode === "signup" && (
+            <label>
+              Name
+              <input
+                style={fieldStyle}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Your name"
+                required
+              />
+            </label>
+          )}
+
+          <label>
+            Email
+            <input
+              style={fieldStyle}
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="you@example.com"
+              required
+            />
+          </label>
+
+          <label>
+            Password
+            <input
+              style={fieldStyle}
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Enter password"
+              required
+            />
+          </label>
+
+          {mode === "signup" && (
+            <>
+              <label>
+                Confirm password
+                <input
+                  style={fieldStyle}
+                  type="password"
+                  value={confirm}
+                  onChange={(event) => setConfirm(event.target.value)}
+                  placeholder="Re-enter password"
+                  required
+                />
+              </label>
+              <small style={{ color: "#68738a" }}>
+                Use more than 8 characters with uppercase, lowercase, and a
+                special character.
+              </small>
+            </>
+          )}
+
+          {error && (
+            <p role="alert" style={{ color: "#b42318", margin: 0, fontSize: 14 }}>
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              border: 0,
+              borderRadius: 10,
+              padding: 13,
+              color: "white",
+              background: loading ? "#999" : "#4f46e5",
+              fontWeight: 700,
+              cursor: loading ? "not-allowed" : "pointer",
+            }}
+          >
+            {loading
+              ? "Please wait..."
+              : mode === "login"
+                ? "Sign in"
+                : "Create account"}
+          </button>
+        </form>
+
+        <p style={{ textAlign: "center", color: "#68738a", marginBottom: 0 }}>
+          {mode === "login" ? "New here? " : "Already have an account? "}
+          <button
+            type="button"
+            onClick={() => {
+              setMode(mode === "login" ? "signup" : "login");
+              setError("");
+            }}
+            style={{
+              border: 0,
+              background: "none",
+              color: "#4f46e5",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            {mode === "login" ? "Sign up" : "Sign in"}
+          </button>
+        </p>
+
+        <p
+          style={{
+            textAlign: "center",
+            fontSize: 12,
+            color: "#8992a5",
+            marginBottom: 0,
+          }}
+        >
+          SubscriptIQ · Secure account access
+        </p>
+      </section>
+    </div>
+  );
+}
+
 function StatCard({ icon, label, value, detail }) {
   return (
     <section className="stat-card">
@@ -577,14 +941,22 @@ function StatCard({ icon, label, value, detail }) {
         <span className="stat-icon">{icon}</span>
       </div>
       <h2>{value}</h2>
-      <p><span className="trend">↗</span> {detail}</p>
+      <p>
+        <span className="trend">↗</span> {detail}
+      </p>
     </section>
   );
 }
 
 function Status({ value }) {
-  const className = value.toLowerCase().replace(/\s+/g, "-");
-  return <span className={"status " + className}><i />{value}</span>;
+  const className = String(value).toLowerCase().replace(/\s+/g, "-");
+
+  return (
+    <span className={"status " + className}>
+      <i />
+      {value}
+    </span>
+  );
 }
 
 export default App;
