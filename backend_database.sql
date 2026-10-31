@@ -685,3 +685,252 @@ WITH CHECK (public.is_admin_or_staff());
 -- =========================================
 -- END OF MODULE 16
 -- =========================================
+
+
+
+-- =========================================
+-- MODULE 17: SUBSCRIPTION LIFECYCLE AND RENEWAL
+-- =========================================
+
+-- 17.1 Add renewal tracking fields
+
+ALTER TABLE public.subscriptions
+ADD COLUMN IF NOT EXISTS renewed_from UUID
+    REFERENCES public.subscriptions(id)
+    ON DELETE SET NULL;
+
+ALTER TABLE public.subscriptions
+ADD COLUMN IF NOT EXISTS renewal_count INTEGER NOT NULL DEFAULT 0
+    CHECK (renewal_count >= 0);
+
+ALTER TABLE public.subscriptions
+ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
+
+ALTER TABLE public.subscriptions
+ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+
+
+-- 17.2 Create index for renewal tracking
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_renewed_from
+ON public.subscriptions(renewed_from);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status_expiry
+ON public.subscriptions(status, expiry_date);
+
+
+-- 17.3 Validate subscription status changes
+
+CREATE OR REPLACE FUNCTION public.validate_subscription_status()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+
+    IF NEW.status IS DISTINCT FROM OLD.status THEN
+
+        -- Draft can become quotation or confirmed
+        IF OLD.status = 'draft'
+           AND NEW.status NOT IN ('quotation', 'confirmed') THEN
+            RAISE EXCEPTION 'Invalid status change from draft';
+        END IF;
+
+        -- Quotation can become confirmed or closed
+        IF OLD.status = 'quotation'
+           AND NEW.status NOT IN ('confirmed', 'closed') THEN
+            RAISE EXCEPTION 'Invalid status change from quotation';
+        END IF;
+
+        -- Confirmed can become active or closed
+        IF OLD.status = 'confirmed'
+           AND NEW.status NOT IN ('active', 'closed') THEN
+            RAISE EXCEPTION 'Invalid status change from confirmed';
+        END IF;
+
+        -- Active can become paused or closed
+        IF OLD.status = 'active'
+           AND NEW.status NOT IN ('paused', 'closed') THEN
+            RAISE EXCEPTION 'Invalid status change from active';
+        END IF;
+
+        -- Paused can become active or closed
+        IF OLD.status = 'paused'
+           AND NEW.status NOT IN ('active', 'closed') THEN
+            RAISE EXCEPTION 'Invalid status change from paused';
+        END IF;
+
+        -- Closed subscriptions cannot be reopened
+        IF OLD.status = 'closed' THEN
+            RAISE EXCEPTION 'Closed subscriptions cannot be changed';
+        END IF;
+
+    END IF;
+
+    -- Record pause date
+    IF NEW.status = 'paused' AND OLD.status <> 'paused' THEN
+        NEW.paused_at = NOW();
+    END IF;
+
+    -- Clear pause date when reactivated
+    IF NEW.status = 'active' AND OLD.status = 'paused' THEN
+        NEW.paused_at = NULL;
+    END IF;
+
+    -- Record closing date
+    IF NEW.status = 'closed' AND OLD.status <> 'closed' THEN
+        NEW.closed_at = NOW();
+    END IF;
+
+    RETURN NEW;
+
+END;
+$$;
+
+
+-- 17.4 Create subscription status trigger
+
+DROP TRIGGER IF EXISTS trg_validate_subscription_status
+ON public.subscriptions;
+
+CREATE TRIGGER trg_validate_subscription_status
+BEFORE UPDATE OF status
+ON public.subscriptions
+FOR EACH ROW
+EXECUTE FUNCTION public.validate_subscription_status();
+
+
+-- 17.5 Create secure subscription renewal function
+
+CREATE OR REPLACE FUNCTION public.renew_subscription(
+    p_subscription_id UUID,
+    p_new_start_date DATE,
+    p_new_expiry_date DATE
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_original public.subscriptions%ROWTYPE;
+    v_new_subscription_id UUID;
+    v_new_number TEXT;
+BEGIN
+
+    -- Only Admin and Staff can renew subscriptions
+    IF NOT public.is_admin_or_staff() THEN
+        RAISE EXCEPTION 'Access denied: Admin or Staff permission required';
+    END IF;
+
+    IF p_new_start_date IS NULL
+       OR p_new_expiry_date IS NULL
+       OR p_new_expiry_date < p_new_start_date THEN
+        RAISE EXCEPTION 'Invalid renewal dates';
+    END IF;
+
+    -- Lock and retrieve original subscription
+    SELECT *
+    INTO v_original
+    FROM public.subscriptions
+    WHERE id = p_subscription_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Subscription not found';
+    END IF;
+
+    IF v_original.status NOT IN ('active', 'closed') THEN
+        RAISE EXCEPTION 'Only active or closed subscriptions can be renewed';
+    END IF;
+
+    IF v_original.status = 'closed' THEN
+        RAISE EXCEPTION 'Closed subscriptions cannot be renewed';
+    END IF;
+
+    -- Check plan renewal permission
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.subscription_plans
+        WHERE id = v_original.plan_id
+          AND allow_renewal = TRUE
+          AND is_active = TRUE
+    ) THEN
+        RAISE EXCEPTION 'This plan does not allow renewal';
+    END IF;
+
+    -- Generate a unique subscription number
+    v_new_number := 'SUB-' ||
+        upper(substr(replace(gen_random_uuid()::TEXT, '-', ''), 1, 12));
+
+    -- Create renewed subscription
+    INSERT INTO public.subscriptions (
+        subscription_number,
+        customer_id,
+        plan_id,
+        start_date,
+        expiry_date,
+        payment_terms,
+        status,
+        renewed_from,
+        renewal_count
+    )
+    VALUES (
+        v_new_number,
+        v_original.customer_id,
+        v_original.plan_id,
+        p_new_start_date,
+        p_new_expiry_date,
+        v_original.payment_terms,
+        'confirmed',
+        v_original.id,
+        v_original.renewal_count + 1
+    )
+    RETURNING id INTO v_new_subscription_id;
+
+    -- Copy subscription items
+    INSERT INTO public.subscription_items (
+        subscription_id,
+        product_id,
+        variant_id,
+        quantity,
+        unit_price,
+        tax_amount,
+        subtotal
+    )
+    SELECT
+        v_new_subscription_id,
+        product_id,
+        variant_id,
+        quantity,
+        unit_price,
+        tax_amount,
+        subtotal
+    FROM public.subscription_items
+    WHERE subscription_id = v_original.id;
+
+    -- Update original renewal count
+    UPDATE public.subscriptions
+    SET renewal_count = renewal_count + 1
+    WHERE id = v_original.id;
+
+    RETURN v_new_subscription_id;
+
+END;
+$$;
+
+
+-- 17.6 Restrict renewal function execution
+
+REVOKE ALL ON FUNCTION public.renew_subscription(UUID, DATE, DATE)
+FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION public.renew_subscription(UUID, DATE, DATE)
+TO authenticated;
+
+
+-- =========================================
+-- END OF MODULE 17
+-- =========================================
+
+
