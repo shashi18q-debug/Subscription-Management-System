@@ -1468,3 +1468,144 @@ TO authenticated;
 -- =========================================
 -- END OF MODULE 20
 -- =========================================
+
+
+-- =========================================
+-- MODULE 21: REPORTS AND DASHBOARD QUERIES
+-- =========================================
+
+-- 21.1 Active subscription report
+
+CREATE OR REPLACE VIEW public.report_active_subscriptions
+WITH (security_invoker = true)
+AS
+SELECT
+    s.id AS subscription_id,
+    s.subscription_number,
+    s.customer_id,
+    p.full_name AS customer_name,
+    sp.name AS plan_name,
+    s.start_date,
+    s.expiry_date,
+    s.status
+FROM public.subscriptions s
+JOIN public.profiles p
+    ON p.id = s.customer_id
+JOIN public.subscription_plans sp
+    ON sp.id = s.plan_id
+WHERE s.status = 'active'
+  AND public.is_admin_or_staff();
+
+
+-- 21.2 Invoice and outstanding balance report
+
+CREATE OR REPLACE VIEW public.report_invoice_summary
+WITH (security_invoker = true)
+AS
+SELECT
+    i.id AS invoice_id,
+    i.invoice_number,
+    i.customer_id,
+    p.full_name AS customer_name,
+    i.invoice_date,
+    i.due_date,
+    i.total_amount,
+    i.amount_paid,
+    i.outstanding_amount,
+    i.status,
+    CASE
+        WHEN i.status <> 'cancelled'
+         AND i.outstanding_amount > 0
+         AND i.due_date < CURRENT_DATE
+        THEN TRUE
+        ELSE FALSE
+    END AS is_overdue
+FROM public.invoices i
+JOIN public.profiles p
+    ON p.id = i.customer_id
+WHERE public.is_admin_or_staff();
+
+
+-- 21.3 Overall dashboard summary
+
+CREATE OR REPLACE VIEW public.report_dashboard_summary
+WITH (security_invoker = true)
+AS
+SELECT
+    (
+        SELECT COUNT(*)
+        FROM public.subscriptions
+        WHERE status = 'active'
+    ) AS active_subscriptions,
+
+    (
+        SELECT COALESCE(SUM(amount), 0)
+        FROM public.payments
+    ) AS total_payments_received,
+
+    (
+        SELECT COALESCE(SUM(outstanding_amount), 0)
+        FROM public.invoices
+        WHERE status <> 'cancelled'
+    ) AS total_outstanding,
+
+    (
+        SELECT COALESCE(SUM(outstanding_amount), 0)
+        FROM public.invoices
+        WHERE status <> 'cancelled'
+          AND outstanding_amount > 0
+          AND due_date < CURRENT_DATE
+    ) AS total_overdue,
+
+    (
+        SELECT COUNT(*)
+        FROM public.invoices
+        WHERE status <> 'cancelled'
+          AND outstanding_amount > 0
+          AND due_date < CURRENT_DATE
+    ) AS overdue_invoice_count
+
+WHERE public.is_admin_or_staff();
+
+
+-- 21.4 Subscription status report
+
+CREATE OR REPLACE VIEW public.report_subscription_status
+WITH (security_invoker = true)
+AS
+SELECT
+    status,
+    COUNT(*) AS subscription_count
+FROM public.subscriptions
+WHERE public.is_admin_or_staff()
+GROUP BY status;
+
+
+-- 21.5 Monthly payment and revenue report
+
+CREATE OR REPLACE VIEW public.report_monthly_revenue
+WITH (security_invoker = true)
+AS
+SELECT
+    DATE_TRUNC('month', payment_date)::DATE AS revenue_month,
+    COUNT(*) AS payment_count,
+    COALESCE(SUM(amount), 0) AS total_revenue
+FROM public.payments
+WHERE public.is_admin_or_staff()
+GROUP BY DATE_TRUNC('month', payment_date)::DATE;
+
+
+-- 21.6 Grant report access to authenticated users
+
+GRANT SELECT ON
+    public.report_active_subscriptions,
+    public.report_invoice_summary,
+    public.report_dashboard_summary,
+    public.report_subscription_status,
+    public.report_monthly_revenue
+TO authenticated;
+
+
+-- =========================================
+-- END OF MODULE 21
+-- =========================================
