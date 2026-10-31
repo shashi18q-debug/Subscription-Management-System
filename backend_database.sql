@@ -934,3 +934,234 @@ TO authenticated;
 -- =========================================
 
 
+
+-- =========================================
+-- MODULE 18: AUTOMATED INVOICE GENERATION
+-- =========================================
+
+-- 18.1 Add billing period tracking to invoices
+
+ALTER TABLE public.invoices
+ADD COLUMN IF NOT EXISTS billing_period_start DATE;
+
+ALTER TABLE public.invoices
+ADD COLUMN IF NOT EXISTS billing_period_end DATE;
+
+
+-- 18.2 Prevent duplicate invoices for the same
+-- subscription and billing period
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+idx_unique_subscription_billing_period
+ON public.invoices (
+    subscription_id,
+    billing_period_start,
+    billing_period_end
+)
+WHERE subscription_id IS NOT NULL
+  AND billing_period_start IS NOT NULL
+  AND billing_period_end IS NOT NULL;
+
+
+-- 18.3 Create invoice generation function
+
+CREATE OR REPLACE FUNCTION public.generate_subscription_invoice(
+    p_subscription_id UUID,
+    p_period_start DATE,
+    p_period_end DATE,
+    p_invoice_date DATE,
+    p_due_date DATE
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_subscription public.subscriptions%ROWTYPE;
+    v_invoice_id UUID;
+    v_invoice_number TEXT;
+    v_subtotal NUMERIC(12,2);
+    v_tax_total NUMERIC(12,2);
+    v_total NUMERIC(12,2);
+    v_item_count INTEGER;
+BEGIN
+
+    -- Only Admin and Staff can generate invoices
+    IF NOT public.is_admin_or_staff() THEN
+        RAISE EXCEPTION
+            'Access denied: Admin or Staff permission required';
+    END IF;
+
+    -- Validate dates
+    IF p_period_start IS NULL
+       OR p_period_end IS NULL
+       OR p_invoice_date IS NULL
+       OR p_due_date IS NULL
+       OR p_period_end < p_period_start
+       OR p_due_date < p_invoice_date THEN
+        RAISE EXCEPTION 'Invalid invoice or billing dates';
+    END IF;
+
+    -- Lock subscription to prevent simultaneous generation
+    SELECT *
+    INTO v_subscription
+    FROM public.subscriptions
+    WHERE id = p_subscription_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Subscription not found';
+    END IF;
+
+    -- Only active subscriptions can be billed
+    IF v_subscription.status <> 'active' THEN
+        RAISE EXCEPTION 'Only active subscriptions can be billed';
+    END IF;
+
+    -- Validate billing period against subscription dates
+    IF p_period_start < v_subscription.start_date
+       OR p_period_end > v_subscription.expiry_date THEN
+        RAISE EXCEPTION
+            'Billing period must fall within subscription dates';
+    END IF;
+
+    -- Check for an existing invoice
+    IF EXISTS (
+        SELECT 1
+        FROM public.invoices
+        WHERE subscription_id = p_subscription_id
+          AND billing_period_start = p_period_start
+          AND billing_period_end = p_period_end
+    ) THEN
+        RAISE EXCEPTION
+            'An invoice already exists for this billing period';
+    END IF;
+
+    -- Calculate invoice amounts from subscription items
+    SELECT
+        COALESCE(SUM(subtotal), 0),
+        COALESCE(SUM(tax_amount), 0),
+        COUNT(*)
+    INTO
+        v_subtotal,
+        v_tax_total,
+        v_item_count
+    FROM public.subscription_items
+    WHERE subscription_id = p_subscription_id;
+
+    IF v_item_count = 0 THEN
+        RAISE EXCEPTION 'Subscription has no items to invoice';
+    END IF;
+
+    v_total := v_subtotal + v_tax_total;
+
+    -- Generate unique invoice number
+    v_invoice_number := 'INV-' ||
+        upper(substr(
+            replace(gen_random_uuid()::TEXT, '-', ''),
+            1,
+            12
+        ));
+
+    -- Create invoice
+    INSERT INTO public.invoices (
+        invoice_number,
+        customer_id,
+        subscription_id,
+        invoice_date,
+        due_date,
+        billing_period_start,
+        billing_period_end,
+        subtotal,
+        tax_total,
+        discount_total,
+        total_amount,
+        amount_paid,
+        status
+    )
+    VALUES (
+        v_invoice_number,
+        v_subscription.customer_id,
+        p_subscription_id,
+        p_invoice_date,
+        p_due_date,
+        p_period_start,
+        p_period_end,
+        v_subtotal,
+        v_tax_total,
+        0,
+        v_total,
+        0,
+        'draft'
+    )
+    RETURNING id INTO v_invoice_id;
+
+    -- Copy subscription items into invoice items
+    INSERT INTO public.invoice_items (
+        invoice_id,
+        product_id,
+        description,
+        quantity,
+        unit_price,
+        tax_rate,
+        tax_amount,
+        discount_amount,
+        line_total
+    )
+    SELECT
+        v_invoice_id,
+        si.product_id,
+        p.name,
+        si.quantity,
+        si.unit_price,
+        CASE
+            WHEN si.subtotal > 0
+            THEN ROUND(
+                (si.tax_amount / si.subtotal) * 100,
+                2
+            )
+            ELSE 0
+        END,
+        si.tax_amount,
+        0,
+        si.subtotal + si.tax_amount
+    FROM public.subscription_items si
+    JOIN public.products p
+        ON p.id = si.product_id
+    WHERE si.subscription_id = p_subscription_id;
+
+    RETURN v_invoice_id;
+
+END;
+$$;
+
+
+-- 18.4 Restrict invoice generation function execution
+
+REVOKE ALL ON FUNCTION
+public.generate_subscription_invoice(
+    UUID, DATE, DATE, DATE, DATE
+)
+FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION
+public.generate_subscription_invoice(
+    UUID, DATE, DATE, DATE, DATE
+)
+TO authenticated;
+
+
+-- 18.5 Create billing lookup index
+
+CREATE INDEX IF NOT EXISTS idx_invoices_billing_dates
+ON public.invoices (
+    billing_period_start,
+    billing_period_end
+);
+
+
+-- =========================================
+-- END OF MODULE 18
+-- =========================================
+
