@@ -1609,3 +1609,165 @@ TO authenticated;
 -- =========================================
 -- END OF MODULE 21
 -- =========================================
+
+
+
+-- =========================================
+-- MODULE 22: BACKEND TESTING, VALIDATION
+-- AND PERFORMANCE AUDIT
+-- =========================================
+
+-- IMPORTANT:
+-- These queries are READ-ONLY diagnostics.
+-- They identify potential problems without
+-- changing or deleting existing records.
+
+
+-- 22.1 Check invalid user roles
+
+SELECT id, role
+FROM public.profiles
+WHERE role NOT IN ('admin', 'staff', 'customer')
+   OR role IS NULL;
+
+
+-- 22.2 Check invalid subscription dates
+
+SELECT
+    id,
+    subscription_number,
+    start_date,
+    expiry_date
+FROM public.subscriptions
+WHERE expiry_date < start_date;
+
+
+-- 22.3 Check subscription items with
+-- variants belonging to another product
+
+SELECT
+    si.id AS subscription_item_id,
+    si.product_id,
+    si.variant_id
+FROM public.subscription_items si
+JOIN public.product_variants pv
+    ON pv.id = si.variant_id
+WHERE pv.product_id <> si.product_id;
+
+
+-- 22.4 Check incorrect invoice calculations
+
+SELECT
+    id,
+    invoice_number,
+    subtotal,
+    tax_total,
+    discount_total,
+    total_amount,
+    subtotal + tax_total - discount_total
+        AS expected_total
+FROM public.invoices
+WHERE ABS(
+    total_amount -
+    (subtotal + tax_total - discount_total)
+) > 0.01;
+
+
+-- 22.5 Check payment totals against invoice records
+
+SELECT
+    i.id AS invoice_id,
+    i.invoice_number,
+    i.amount_paid,
+    COALESCE(SUM(p.amount), 0) AS recorded_payments
+FROM public.invoices i
+LEFT JOIN public.payments p
+    ON p.invoice_id = i.id
+GROUP BY i.id, i.invoice_number, i.amount_paid
+HAVING ABS(
+    i.amount_paid - COALESCE(SUM(p.amount), 0)
+) > 0.01;
+
+
+-- 22.6 Check invoices with overpayments
+
+SELECT
+    id,
+    invoice_number,
+    total_amount,
+    amount_paid
+FROM public.invoices
+WHERE amount_paid > total_amount;
+
+
+-- 22.7 Check duplicate subscription billing periods
+
+SELECT
+    subscription_id,
+    billing_period_start,
+    billing_period_end,
+    COUNT(*) AS duplicate_count
+FROM public.invoices
+WHERE subscription_id IS NOT NULL
+  AND billing_period_start IS NOT NULL
+  AND billing_period_end IS NOT NULL
+GROUP BY
+    subscription_id,
+    billing_period_start,
+    billing_period_end
+HAVING COUNT(*) > 1;
+
+
+-- 22.8 Check discount usage values
+
+SELECT
+    id,
+    name,
+    times_used,
+    usage_limit
+FROM public.discount_rules
+WHERE times_used < 0
+   OR (
+       usage_limit IS NOT NULL
+       AND times_used > usage_limit
+   );
+
+
+-- 22.9 Check invoice outstanding balances
+
+SELECT
+    id,
+    invoice_number,
+    total_amount,
+    amount_paid,
+    outstanding_amount
+FROM public.invoices
+WHERE amount_paid < 0
+   OR total_amount < 0
+   OR outstanding_amount < 0;
+
+
+-- 22.10 Check important database indexes
+
+SELECT
+    schemaname,
+    tablename,
+    indexname
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename IN (
+      'profiles',
+      'products',
+      'subscriptions',
+      'subscription_items',
+      'invoices',
+      'invoice_items',
+      'payments',
+      'discount_rules'
+  )
+ORDER BY tablename, indexname;
+
+
+-- =========================================
+-- END OF MODULE 22
+-- =========================================
