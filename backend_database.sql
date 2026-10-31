@@ -1165,3 +1165,133 @@ ON public.invoices (
 -- END OF MODULE 18
 -- =========================================
 
+
+
+-- =========================================
+-- MODULE 19: PAYMENT PROCESSING AND BALANCE MANAGEMENT
+-- =========================================
+
+-- 19.1 Add outstanding balance column
+
+ALTER TABLE public.invoices
+ADD COLUMN IF NOT EXISTS outstanding_amount NUMERIC(12,2)
+GENERATED ALWAYS AS (
+    GREATEST(total_amount - amount_paid, 0)
+) STORED;
+
+
+-- 19.2 Create index for payment history
+
+CREATE INDEX IF NOT EXISTS idx_payments_invoice_date
+ON public.payments(invoice_id, payment_date);
+
+
+-- 19.3 Validate and process payment automatically
+
+CREATE OR REPLACE FUNCTION public.process_invoice_payment()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_invoice public.invoices%ROWTYPE;
+BEGIN
+
+    -- Only Admin and Staff can record payments
+    IF NOT public.is_admin_or_staff() THEN
+        RAISE EXCEPTION
+            'Access denied: Admin or Staff permission required';
+    END IF;
+
+    -- Lock invoice row
+    SELECT *
+    INTO v_invoice
+    FROM public.invoices
+    WHERE id = NEW.invoice_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Invoice not found';
+    END IF;
+
+    -- Prevent payments on invalid invoice statuses
+    IF v_invoice.status NOT IN ('confirmed', 'sent') THEN
+        RAISE EXCEPTION
+            'Payments can only be recorded for confirmed or sent invoices';
+    END IF;
+
+    -- Prevent overpayment
+    IF NEW.amount > (v_invoice.total_amount - v_invoice.amount_paid) THEN
+        RAISE EXCEPTION
+            'Payment exceeds the outstanding invoice balance';
+    END IF;
+
+    -- Update invoice paid amount and status
+    UPDATE public.invoices
+    SET
+        amount_paid = amount_paid + NEW.amount,
+        status = CASE
+            WHEN amount_paid + NEW.amount >= total_amount
+            THEN 'paid'
+            ELSE status
+        END
+    WHERE id = NEW.invoice_id;
+
+    RETURN NEW;
+
+END;
+$$;
+
+
+-- 19.4 Create payment trigger
+
+DROP TRIGGER IF EXISTS trg_process_invoice_payment
+ON public.payments;
+
+CREATE TRIGGER trg_process_invoice_payment
+BEFORE INSERT ON public.payments
+FOR EACH ROW
+EXECUTE FUNCTION public.process_invoice_payment();
+
+
+-- 19.5 Prevent direct payment editing or deletion
+
+CREATE OR REPLACE FUNCTION public.prevent_payment_modification()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+    RAISE EXCEPTION
+        'Payment records cannot be edited or deleted. Record corrections separately.';
+END;
+$$;
+
+
+DROP TRIGGER IF EXISTS trg_prevent_payment_update
+ON public.payments;
+
+CREATE TRIGGER trg_prevent_payment_update
+BEFORE UPDATE OR DELETE ON public.payments
+FOR EACH ROW
+EXECUTE FUNCTION public.prevent_payment_modification();
+
+
+-- 19.6 Restrict payment table permissions
+
+REVOKE UPDATE, DELETE
+ON public.payments
+FROM authenticated;
+
+
+-- 19.7 Secure payment trigger execution
+
+REVOKE ALL ON FUNCTION public.process_invoice_payment()
+FROM PUBLIC, anon, authenticated;
+
+
+-- =========================================
+-- END OF MODULE 19
+-- =========================================
+
